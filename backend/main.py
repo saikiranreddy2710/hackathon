@@ -122,6 +122,20 @@ async def websocket_endpoint(websocket: WebSocket):
                         "message": "No active session. Send session.start first."
                     })
 
+            # --- TEXT SEND ---
+            # Browser sends typed text for translation relay
+            elif msg_type == "text.send":
+                if session_manager:
+                    text_data = message.get("text", "")
+                    if text_data:
+                        await session_manager.send_text(text_data)
+                else:
+                    await websocket.send_json({
+                        "type": "session.status",
+                        "status": "error",
+                        "message": "No active session. Send session.start first."
+                    })
+
             # --- IMAGE SEND ---
             # Browser sends a document image for visual relay
             elif msg_type == "image.send":

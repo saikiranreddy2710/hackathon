@@ -2,13 +2,10 @@
 ClinBridge Backend — Session Manager
 Wraps the Gemini Multimodal Live API session lifecycle.
 Handles audio forwarding, image relay, and event mapping back to the browser client.
-
-TODO(live-sdk-version): Event shapes and method signatures may change across
-google-genai SDK versions. All SDK-specific parsing is isolated in this file.
 """
 
 import os
-import json
+import re
 import base64
 import asyncio
 import traceback
@@ -17,40 +14,33 @@ from google.genai import types
 
 # ---------------------------------------------------------------------------
 # ClinBridge system instruction — injected at Live session creation.
-# This is the single source of truth for model behavior constraints.
 # ---------------------------------------------------------------------------
 SYSTEM_INSTRUCTION = """You are ClinBridge, a real-time multilingual clinical communication relay.
 
-Your job is to translate and relay spoken communication between a patient and a clinician,
-and to translate visible printed text from documents shown to you.
+CRITICAL OUTPUT RULES:
+- When translating, respond ONLY with the translated text. Do not explain, analyze, or narrate your translation process.
+- Never output markdown formatting, bold text, headers, or bullet points.
+- Keep responses short and conversational — this is a live bedside translation.
 
 TRANSLATION RULES:
-- You must preserve meaning and medically relevant terminology, but remain concise for live conversation.
-- When you hear speech in one language, translate it to the other language and speak the translation.
-- Always output both the original text and the translated text when possible.
-- Preserve urgency, tone, and emotional context in translation.
-
-STRICT SAFETY RULES — YOU MUST FOLLOW THESE AT ALL TIMES:
-- You must NOT provide diagnosis, treatment advice, triage, medication recommendations, or clinical interpretation.
-- You must NOT assess symptoms, suggest medications, evaluate risk, or make any medical decisions.
-- If asked for medical advice or clinical judgment, say: "I can translate and relay communication, but medical decisions must come from the clinician."
-- You are a communication layer ONLY, not a medical assistant.
-
-DOCUMENT/IMAGE RULES:
-- If shown a document or image, ONLY describe or translate what is visibly present.
-- Before relaying document content, say: "I will translate the visible text on this document. This is not medical advice."
-- Do NOT infer, guess, or fill in missing text.
-- If text is blurry, partially obscured, or unreadable, explicitly say so.
-- Never interpret medical values, lab results, or clinical findings — only translate the visible text.
-
-LANGUAGE BEHAVIOR:
 - The clinician speaks {clinician_lang} and the patient speaks {patient_lang}.
 - When you hear {clinician_lang}, translate to {patient_lang} and speak the translation.
 - When you hear {patient_lang}, translate to {clinician_lang} and speak the translation.
-- If you are unsure of the source language, ask for clarification.
+- Preserve meaning, medically relevant terminology, urgency, tone, and emotional context.
+- If you are unsure of the source language, ask for clarification briefly.
+
+SAFETY RULES:
+- You must NOT provide diagnosis, treatment advice, triage, medication recommendations, or clinical interpretation.
+- If asked for medical advice, say: "I can only translate. Medical decisions must come from the clinician."
+- You are a communication layer ONLY, not a medical assistant.
+
+DOCUMENT/IMAGE RULES:
+- If shown a document or image, translate ONLY the visible text.
+- Say "Translating visible text. This is not medical advice." before relaying.
+- Never interpret medical values or clinical findings — only translate what is visible.
+- If text is blurry or unreadable, say so.
 """
 
-# Map of language codes to readable names for the system instruction
 LANGUAGE_NAMES = {
     "en-US": "English",
     "es-US": "Spanish",
@@ -61,16 +51,47 @@ LANGUAGE_NAMES = {
 }
 
 
-class SessionManager:
+def _extract_translation(thinking_text: str) -> str:
+    """Extract the clean translated sentence from the model's thinking output.
+
+    Native audio models mark text as thought=True. The actual translation is
+    typically quoted inside the thinking narrative, e.g.:
+      'translated X as "Hola, ¿cómo estás?"'
+    """
+    # Try to find quoted translations (single or double quotes, or guillemets)
+    patterns = [
+        r'(?:as|is|to|:)\s*["\u201c]([^"\u201d]+)["\u201d]',
+        r'(?:as|is|to|:)\s*[\'"](.+?)[\'"]',
+        r'["\u201c]([^"\u201d]{5,})["\u201d]',
+    ]
+    for pat in patterns:
+        matches = re.findall(pat, thinking_text)
+        if matches:
+            # Return the longest match (most likely the full translation)
+            return max(matches, key=len).strip()
+
+    # Fallback: strip markdown bold headers and return remaining content
+    cleaned = re.sub(r'\*\*[^*]+\*\*\s*\n*', '', thinking_text).strip()
+    # If what remains looks like a sentence, use it
+    lines = [l.strip() for l in cleaned.split('\n') if l.strip()]
+    if lines:
+        # Find the first line that looks like actual translated content
+        for line in lines:
+            if not line.startswith(('I ', "I'", 'My ', 'The ', 'This ')):
+                return line
+        # If all lines are English narration, return the last sentence
+        return lines[-1] if len(lines[-1]) < 200 else ""
+    return ""
+
+
+
     """
     Manages one Gemini Live session per browser WebSocket connection.
 
-    Lifecycle:
-      1. start()         — opens the Gemini Live session
-      2. send_audio()    — forwards PCM16 mic chunks from browser
-      3. send_image()    — forwards document images from browser
-      4. _receive_loop() — async loop reading Gemini events → browser
-      5. close()         — tears down the session
+    Key design: session.receive() yields events until turn_complete, then the
+    iterator ends. We must call receive() again for each new model turn.
+    The _receive_loop continuously re-enters receive() so the session stays
+    responsive across multiple conversation turns.
     """
 
     def __init__(self, websocket, clinician_lang: str, patient_lang: str):
@@ -78,11 +99,10 @@ class SessionManager:
         self.clinician_lang = clinician_lang
         self.patient_lang = patient_lang
         self._session = None
-        self._session_ctx = None  # The async context manager object
+        self._session_ctx = None
         self._receive_task = None
         self._closed = False
 
-        # Initialize the Gemini client with the API key
         api_key = os.environ.get("GOOGLE_API_KEY", "")
         if not api_key:
             raise ValueError("GOOGLE_API_KEY environment variable is not set")
@@ -93,7 +113,6 @@ class SessionManager:
         clinician_name = LANGUAGE_NAMES.get(self.clinician_lang, self.clinician_lang)
         patient_name = LANGUAGE_NAMES.get(self.patient_lang, self.patient_lang)
 
-        # Format the system instruction with the chosen languages
         system_prompt = SYSTEM_INSTRUCTION.format(
             clinician_lang=clinician_name,
             patient_lang=patient_name,
@@ -119,10 +138,8 @@ class SessionManager:
         )
         self._session = await self._session_ctx.__aenter__()
 
-        # Start the background receive loop
         self._receive_task = asyncio.create_task(self._receive_loop())
 
-        # Notify the browser that the session is ready
         await self._send_to_browser({
             "type": "session.status",
             "status": "connected",
@@ -130,97 +147,115 @@ class SessionManager:
         })
 
     async def send_audio(self, pcm_base64: str):
-        """
-        Forward a base64-encoded PCM16 audio chunk from the browser to Gemini.
-        Expected format: 16-bit PCM, mono, 16kHz sample rate.
-        """
+        """Forward a base64-encoded PCM16 audio chunk to Gemini via send()."""
         if not self._session or self._closed:
             return
         try:
             raw_audio = base64.b64decode(pcm_base64)
-            # TODO(live-sdk-version): send_realtime_input signature may change.
-            await self._session.send_realtime_input(
-                audio=types.Blob(data=raw_audio, mime_type="audio/pcm;rate=16000")
+            await self._session.send(
+                input=types.LiveClientRealtimeInput(
+                    media_chunks=[
+                        types.Blob(data=raw_audio, mime_type="audio/pcm;rate=16000")
+                    ]
+                )
             )
         except Exception as e:
             print(f"[ClinBridge] Error sending audio: {e}")
-            await self._send_to_browser({
-                "type": "session.status",
-                "status": "error",
-                "message": f"Audio send error: {str(e)}"
-            })
+
+    async def send_text(self, text: str):
+        """Send typed text to Gemini for translation."""
+        if not self._session or self._closed:
+            return
+        try:
+            await self._session.send(
+                input=types.LiveClientContent(
+                    turns=[types.Content(parts=[types.Part(text=text)])],
+                    turn_complete=True,
+                )
+            )
+        except Exception as e:
+            print(f"[ClinBridge] Error sending text: {e}")
 
     async def send_image(self, image_base64: str, mime_type: str = "image/jpeg"):
-        """
-        Forward a base64-encoded image (document snapshot) to Gemini Live.
-        The system instruction tells the model to relay visible text only.
-        """
+        """Forward a base64-encoded image to Gemini for document relay."""
         if not self._session or self._closed:
             return
         try:
             raw_image = base64.b64decode(image_base64)
-            # TODO(live-sdk-version): media param for send_realtime_input may change.
-            await self._session.send_realtime_input(
-                media=types.Blob(data=raw_image, mime_type=mime_type)
+            await self._session.send(
+                input=types.LiveClientRealtimeInput(
+                    media_chunks=[
+                        types.Blob(data=raw_image, mime_type=mime_type)
+                    ]
+                )
             )
         except Exception as e:
             print(f"[ClinBridge] Error sending image: {e}")
-            await self._send_to_browser({
-                "type": "session.status",
-                "status": "error",
-                "message": f"Image send error: {str(e)}"
-            })
 
     async def _receive_loop(self):
         """
-        Async loop that reads events from the Gemini Live session and
-        maps them to our client protocol, pushing results to the browser.
+        Continuously read Gemini events and relay them to the browser.
 
-        Event flow:
-          Gemini Live → server_content → { interrupted?, model_turn.parts[] }
-            → parts may contain inline_data (audio) or text (transcript)
-            → mapped to audio.response / transcript.add / audio.interrupted
+        receive() yields events until turn_complete, then the iterator ends.
+        We re-enter receive() after each turn so the session remains responsive
+        for multi-turn conversations.
         """
         try:
-            # TODO(live-sdk-version): The receive() iterator and event shapes
-            # (server_content, model_turn, etc.) may change across SDK versions.
-            async for msg in self._session.receive():
-                if self._closed:
-                    break
+            while not self._closed:
+                async for msg in self._session.receive():
+                    if self._closed:
+                        return
 
-                server_content = msg.server_content
-                if not server_content:
-                    continue
+                    server_content = getattr(msg, "server_content", None)
+                    if not server_content:
+                        continue
 
-                # --- Barge-in / Interruption handling ---
-                # When the user starts speaking while the model is outputting,
-                # Gemini signals interrupted=True. We tell the browser to flush
-                # its playback queue immediately for natural turn-taking.
-                if server_content.interrupted:
-                    await self._send_to_browser({"type": "audio.interrupted"})
-                    continue
+                    # Barge-in: user interrupted model output
+                    interrupted = getattr(server_content, "interrupted", False)
+                    if interrupted:
+                        await self._send_to_browser({"type": "audio.interrupted"})
+                        continue
 
-                # --- Model turn: process audio and text parts ---
-                if server_content.model_turn:
-                    for part in server_content.model_turn.parts:
-                        # Audio response from model (translated speech)
-                        if part.inline_data and part.inline_data.data:
-                            audio_b64 = base64.b64encode(
-                                part.inline_data.data
-                            ).decode("utf-8")
-                            await self._send_to_browser({
-                                "type": "audio.response",
-                                "data": audio_b64,
-                            })
+                    # Model turn: audio and/or text parts
+                    model_turn = getattr(server_content, "model_turn", None)
+                    if model_turn:
+                        for part in (model_turn.parts or []):
+                            inline_data = getattr(part, "inline_data", None)
+                            if inline_data and inline_data.data:
+                                audio_b64 = base64.b64encode(
+                                    inline_data.data
+                                ).decode("utf-8")
+                                await self._send_to_browser({
+                                    "type": "audio.response",
+                                    "data": audio_b64,
+                                })
 
-                        # Text response from model (relay transcript)
-                        if part.text:
-                            await self._send_to_browser({
-                                "type": "transcript.add",
-                                "speaker": "relay",
-                                "text": part.text,
-                            })
+                            text = getattr(part, "text", None)
+                            is_thought = getattr(part, "thought", False)
+                            if text:
+                                if is_thought:
+                                    # Extract clean translation from thinking
+                                    clean = _extract_translation(text)
+                                    if clean:
+                                        await self._send_to_browser({
+                                            "type": "transcript.add",
+                                            "speaker": "relay",
+                                            "text": clean,
+                                        })
+                                else:
+                                    await self._send_to_browser({
+                                        "type": "transcript.add",
+                                        "speaker": "relay",
+                                        "text": text,
+                                    })
 
+                    # Turn complete — iterator will end; outer while re-enters
+                    turn_complete = getattr(server_content, "turn_complete", False)
+                    if turn_complete:
+                        await self._send_to_browser({"type": "turn.complete"})
+
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             if not self._closed:
                 print(f"[ClinBridge] Receive loop error: {e}")
@@ -236,7 +271,6 @@ class SessionManager:
         try:
             await self.ws.send_json(data)
         except Exception:
-            # Browser may have disconnected
             self._closed = True
 
     async def close(self):
