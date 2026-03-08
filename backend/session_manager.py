@@ -100,19 +100,12 @@ class SessionManager:
         )
 
         # TODO(live-sdk-version): LiveConnectConfig fields may change across SDK versions.
+        # NOTE: The native audio model handles voice and language internally.
+        # We only need to set response_modalities and system_instruction.
         config = types.LiveConnectConfig(
-            response_modalities=["AUDIO", "TEXT"],
+            response_modalities=["AUDIO"],
             system_instruction=types.Content(
                 parts=[types.Part(text=system_prompt)]
-            ),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Kore"
-                    )
-                ),
-                # Output language for the model's speech
-                language_code=self.patient_lang,
             ),
         )
 
