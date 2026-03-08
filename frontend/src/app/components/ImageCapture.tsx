@@ -67,6 +67,15 @@ export default function ImageCapture({
     }
   }, []);
 
+  // Stop camera stream
+  const stopCamera = useCallback(() => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((t) => t.stop());
+      setCameraStream(null);
+    }
+    setCameraActive(false);
+  }, [cameraStream]);
+
   // Capture a snapshot from the camera
   const captureSnapshot = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return;
@@ -88,16 +97,7 @@ export default function ImageCapture({
 
     // Stop camera after capture
     stopCamera();
-  }, [onImageCapture]);
-
-  // Stop camera stream
-  const stopCamera = useCallback(() => {
-    if (cameraStream) {
-      cameraStream.getTracks().forEach((t) => t.stop());
-      setCameraStream(null);
-    }
-    setCameraActive(false);
-  }, [cameraStream]);
+  }, [onImageCapture, stopCamera]);
 
   return (
     <div className="image-capture">

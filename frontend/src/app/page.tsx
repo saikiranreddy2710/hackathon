@@ -20,7 +20,7 @@ import { AudioEngine } from './components/AudioEngine';
 export default function ClinBridgePage() {
   // --- State ---
   const [clinicianLang, setClinicianLang] = useState('en-US');
-  const [patientLang, setPatientLang] = useState('es-ES');
+  const [patientLang, setPatientLang] = useState('es-US');
   const [status, setStatus] = useState<SessionStatus>('idle');
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [isDocumentMode, setIsDocumentMode] = useState(false);
@@ -49,12 +49,11 @@ export default function ClinBridgePage() {
 
   // --- Add a transcript entry ---
   const addTranscript = useCallback(
-    (speaker: TranscriptEntry['speaker'], original: string, translated: string, confidence?: TranscriptEntry['confidence']) => {
+    (speaker: TranscriptEntry['speaker'], text: string, confidence?: TranscriptEntry['confidence']) => {
       const entry: TranscriptEntry = {
         id: `entry-${entryIdCounter.current++}`,
         speaker,
-        original,
-        translated,
+        text,
         confidence,
         timestamp: new Date(),
       };
@@ -92,11 +91,9 @@ export default function ClinBridgePage() {
             break;
 
           case 'transcript.add':
-            // Add transcript entry to the pane
             addTranscript(
-              msg.speaker || 'system',
-              msg.original || '',
-              msg.translated || '',
+              msg.speaker || 'relay',
+              msg.text || '',
               msg.confidence
             );
             break;
@@ -143,6 +140,10 @@ export default function ClinBridgePage() {
 
       ws.onerror = (err) => {
         console.error('[ClinBridge] WebSocket error:', err);
+        if (audioEngineRef.current) {
+          audioEngineRef.current.destroy();
+          audioEngineRef.current = null;
+        }
         setStatus('error');
         setStatusMessage('WebSocket connection failed. Is the backend running?');
       };
@@ -166,6 +167,17 @@ export default function ClinBridgePage() {
       });
     } catch (err) {
       console.error('[ClinBridge] Start error:', err);
+
+      // Clean up mic capture and WebSocket on failure
+      if (audioEngineRef.current) {
+        audioEngineRef.current.destroy();
+        audioEngineRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+
       setStatus('error');
       setStatusMessage(
         err instanceof DOMException && err.name === 'NotAllowedError'
@@ -203,7 +215,7 @@ export default function ClinBridgePage() {
           data: base64,
           mimeType,
         }));
-        addTranscript('document', 'Document image sent for relay...', 'Relaying visible text...');
+        addTranscript('document', 'Document image sent for relay...');
       }
     },
     [addTranscript]
@@ -212,7 +224,7 @@ export default function ClinBridgePage() {
   // --- Copy transcript ---
   const handleCopyTranscript = useCallback(() => {
     const text = transcripts
-      .map((e) => `[${e.speaker.toUpperCase()}] ${e.original} → ${e.translated}`)
+      .map((e) => `[${e.speaker.toUpperCase()}] ${e.text}`)
       .join('\n');
     navigator.clipboard.writeText(text);
   }, [transcripts]);
@@ -222,7 +234,7 @@ export default function ClinBridgePage() {
     const text = transcripts
       .map(
         (e) =>
-          `[${e.timestamp.toLocaleTimeString()}] [${e.speaker.toUpperCase()}]\nOriginal: ${e.original}\nTranslated: ${e.translated}\n`
+          `[${e.timestamp.toLocaleTimeString()}] [${e.speaker.toUpperCase()}]\n${e.text}\n`
       )
       .join('\n---\n');
     const blob = new Blob([text], { type: 'text/plain' });

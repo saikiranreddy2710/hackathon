@@ -53,7 +53,7 @@ LANGUAGE BEHAVIOR:
 # Map of language codes to readable names for the system instruction
 LANGUAGE_NAMES = {
     "en-US": "English",
-    "es-ES": "Spanish",
+    "es-US": "Spanish",
     "hi-IN": "Hindi",
     "zh-CN": "Mandarin Chinese",
     "fr-FR": "French",
@@ -99,9 +99,8 @@ class SessionManager:
             patient_lang=patient_name,
         )
 
-        # TODO(live-sdk-version): LiveConnectConfig fields may change across SDK versions.
         config = types.LiveConnectConfig(
-            response_modalities=["AUDIO", "TEXT"],
+            response_modalities=["AUDIO"],
             system_instruction=types.Content(
                 parts=[types.Part(text=system_prompt)]
             ),
@@ -111,17 +110,11 @@ class SessionManager:
                         voice_name="Kore"
                     )
                 ),
-                # Output language for the model's speech
-                language_code=self.patient_lang,
             ),
         )
 
-        # Open the async live session
-        # NOTE: client.aio.live.connect() returns an async context manager.
-        # We manually enter/exit it since we manage the lifecycle across methods.
-        # TODO(live-sdk-version): Model name may change. Use latest Live-capable model.
         self._session_ctx = self.client.aio.live.connect(
-            model="gemini-2.5-flash-native-audio-preview-12-2025",
+            model="gemini-2.5-flash-native-audio-latest",
             config=config,
         )
         self._session = await self._session_ctx.__aenter__()
@@ -220,14 +213,12 @@ class SessionManager:
                                 "data": audio_b64,
                             })
 
-                        # Text response from model (transcript)
+                        # Text response from model (relay transcript)
                         if part.text:
                             await self._send_to_browser({
                                 "type": "transcript.add",
-                                "speaker": "system",
-                                "original": part.text,
-                                "translated": part.text,
-                                "confidence": "clear",
+                                "speaker": "relay",
+                                "text": part.text,
                             })
 
         except Exception as e:

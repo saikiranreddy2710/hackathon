@@ -4,9 +4,8 @@ import React, { useRef, useEffect } from 'react';
 
 export interface TranscriptEntry {
   id: string;
-  speaker: 'clinician' | 'patient' | 'system' | 'document';
-  original: string;
-  translated: string;
+  speaker: 'clinician' | 'patient' | 'system' | 'document' | 'relay';
+  text: string;
   confidence?: 'clear' | 'uncertain' | 'partial';
   timestamp: Date;
 }
@@ -56,7 +55,7 @@ export default function TranscriptPane({ entries, onCopy, onDownload }: Transcri
         </svg>
       );
     }
-    // system
+    // system / relay
     return (
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -111,14 +110,7 @@ export default function TranscriptPane({ entries, onCopy, onDownload }: Transcri
                 )}
               </div>
               <div className="entry-content">
-                <div className="entry-original">
-                  <span className="content-label">Original</span>
-                  <p>{entry.original}</p>
-                </div>
-                <div className="entry-translated">
-                  <span className="content-label">Translated</span>
-                  <p>{entry.translated}</p>
-                </div>
+                <p className="entry-text">{entry.text}</p>
               </div>
             </div>
           ))

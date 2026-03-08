@@ -5,7 +5,7 @@ import React from 'react';
 /** Supported languages for ClinBridge */
 const LANGUAGES = [
   { code: 'en-US', label: 'English' },
-  { code: 'es-ES', label: 'Spanish' },
+  { code: 'es-US', label: 'Spanish' },
   { code: 'hi-IN', label: 'Hindi' },
   { code: 'zh-CN', label: 'Mandarin' },
   { code: 'fr-FR', label: 'French' },

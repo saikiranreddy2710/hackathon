@@ -677,6 +677,11 @@ body {
   color: var(--accent-amber);
 }
 
+.badge-relay {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-emerald);
+}
+
 .entry-time {
   font-size: 11px;
   color: var(--text-muted);
@@ -701,30 +706,13 @@ body {
 }
 
 .entry-content {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  margin-top: 4px;
 }
 
-.content-label {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-muted);
-  display: block;
-  margin-bottom: 4px;
-}
-
-.entry-original p,
-.entry-translated p {
+.entry-text {
   font-size: 14px;
   line-height: 1.5;
   color: var(--text-primary);
-}
-
-.entry-translated p {
-  color: var(--accent-cyan);
 }
 
 /* ============================================================
@@ -783,6 +771,6 @@ body {
   }
 
   .entry-content {
-    grid-template-columns: 1fr;
+    margin-top: 4px;
   }
 }

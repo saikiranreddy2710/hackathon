@@ -86,7 +86,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Browser requests a new live translation session
             if msg_type == "session.start":
                 clinician_lang = message.get("clinicianLang", "en-US")
-                patient_lang = message.get("patientLang", "es-ES")
+                patient_lang = message.get("patientLang", "es-US")
 
                 # Close any existing session first
                 if session_manager:
