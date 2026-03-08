@@ -155,12 +155,13 @@ export default function ClinBridgePage() {
       const engine = new AudioEngine();
       audioEngineRef.current = engine;
 
-      await engine.startCapture((base64Chunk) => {
-        // Send PCM16 audio chunks to the backend
+      // 4. Start mic capture
+      await engine.startCapture((base64, sampleRate) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({
             type: 'audio.chunk',
-            data: base64Chunk,
+            data: base64,
+            sampleRate: sampleRate
           }));
         }
       });

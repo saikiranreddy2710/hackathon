@@ -113,8 +113,9 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "audio.chunk":
                 if session_manager:
                     audio_data = message.get("data", "")
+                    sample_rate = message.get("sampleRate", 16000)
                     if audio_data:
-                        await session_manager.send_audio(audio_data)
+                        await session_manager.send_audio(audio_data, sample_rate)
                 else:
                     await websocket.send_json({
                         "type": "session.status",

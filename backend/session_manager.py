@@ -100,8 +100,8 @@ class SessionManager:
         )
 
         # TODO(live-sdk-version): LiveConnectConfig fields may change across SDK versions.
-        # NOTE: The native audio model handles voice and language internally.
-        # We only need to set response_modalities and system_instruction.
+        # Ensure ONLY AUDIO is requested since the native audio preview model
+        # throws an Invalid Argument error if TEXT is requested.
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=types.Content(
@@ -129,10 +129,10 @@ class SessionManager:
             "message": f"Live session active: {clinician_name} ↔ {patient_name}"
         })
 
-    async def send_audio(self, pcm_base64: str):
+    async def send_audio(self, pcm_base64: str, sample_rate: int = 16000):
         """
-        Forward a base64-encoded PCM16 audio chunk from the browser to Gemini.
-        Expected format: 16-bit PCM, mono, 16kHz sample rate.
+        Forward a base64-encoded PCM16 audio chunk from to Gemini Live.
+        Uses the exact sample rate given by the browser's AudioContext.
         """
         if not self._session or self._closed:
             return
@@ -140,15 +140,21 @@ class SessionManager:
             raw_audio = base64.b64decode(pcm_base64)
             # TODO(live-sdk-version): send_realtime_input signature may change.
             await self._session.send_realtime_input(
-                audio=types.Blob(data=raw_audio, mime_type="audio/pcm;rate=16000")
+                audio=types.Blob(data=raw_audio, mime_type=f"audio/pcm;rate={sample_rate}")
             )
         except Exception as e:
-            print(f"[ClinBridge] Error sending audio: {e}")
-            await self._send_to_browser({
-                "type": "session.status",
-                "status": "error",
-                "message": f"Audio send error: {str(e)}"
-            })
+            # Log but don't send error to browser for each chunk — it's too noisy
+            # and would flood the UI. Only mark closed if session is truly dead.
+            if "close" in str(e).lower() or "1011" in str(e) or "1008" in str(e):
+                print(f"[ClinBridge] Session closed during audio send: {e}")
+                self._closed = True
+                await self._send_to_browser({
+                    "type": "session.status",
+                    "status": "error",
+                    "message": f"Session disconnected: {str(e)}"
+                })
+            else:
+                print(f"[ClinBridge] Audio send error (non-fatal): {e}")
 
     async def send_image(self, image_base64: str, mime_type: str = "image/jpeg"):
         """
@@ -190,23 +196,25 @@ class SessionManager:
 
                 server_content = msg.server_content
                 if not server_content:
+                    # Log other event types for debugging
+                    print(f"[ClinBridge] Non-server_content event: {type(msg).__name__}")
                     continue
 
                 # --- Barge-in / Interruption handling ---
-                # When the user starts speaking while the model is outputting,
-                # Gemini signals interrupted=True. We tell the browser to flush
-                # its playback queue immediately for natural turn-taking.
-                if server_content.interrupted:
+                if getattr(server_content, 'interrupted', False):
+                    print("[ClinBridge] Barge-in detected")
                     await self._send_to_browser({"type": "audio.interrupted"})
                     continue
 
                 # --- Model turn: process audio and text parts ---
-                if server_content.model_turn:
-                    for part in server_content.model_turn.parts:
+                model_turn = getattr(server_content, 'model_turn', None)
+                if model_turn and hasattr(model_turn, 'parts'):
+                    for part in model_turn.parts:
                         # Audio response from model (translated speech)
-                        if part.inline_data and part.inline_data.data:
+                        inline_data = getattr(part, 'inline_data', None)
+                        if inline_data and inline_data.data:
                             audio_b64 = base64.b64encode(
-                                part.inline_data.data
+                                inline_data.data
                             ).decode("utf-8")
                             await self._send_to_browser({
                                 "type": "audio.response",
@@ -214,19 +222,26 @@ class SessionManager:
                             })
 
                         # Text response from model (transcript)
-                        if part.text:
+                        text = getattr(part, 'text', None)
+                        if text:
+                            print(f"[ClinBridge] Transcript: {text[:80]}")
                             await self._send_to_browser({
                                 "type": "transcript.add",
                                 "speaker": "system",
-                                "original": part.text,
-                                "translated": part.text,
+                                "original": text,
+                                "translated": text,
                                 "confidence": "clear",
                             })
+
+                # --- Turn complete signal ---
+                if getattr(server_content, 'turn_complete', False):
+                    print("[ClinBridge] Turn complete")
 
         except Exception as e:
             if not self._closed:
                 print(f"[ClinBridge] Receive loop error: {e}")
                 traceback.print_exc()
+                self._closed = True
                 await self._send_to_browser({
                     "type": "session.status",
                     "status": "error",

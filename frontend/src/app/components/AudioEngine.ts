@@ -51,13 +51,13 @@ export class AudioEngine {
   private playbackQueue: AudioBuffer[] = [];
   private isPlaying = false;
   private currentSource: AudioBufferSourceNode | null = null;
-  private onAudioChunk: ((base64: string) => void) | null = null;
+  private onAudioChunk: ((base64: string, sampleRate: number) => void) | null = null;
 
   /**
    * Start capturing audio from the microphone.
    * Sends PCM16 chunks via the onChunk callback as base64 strings.
    */
-  async startCapture(onChunk: (base64: string) => void): Promise<void> {
+  async startCapture(onChunk: (base64: string, sampleRate: number) => void): Promise<void> {
     this.onAudioChunk = onChunk;
 
     // Request microphone access
@@ -82,15 +82,14 @@ export class AudioEngine {
 
     // Listen for PCM chunks from the worklet
     this.workletNode.port.onmessage = (event) => {
-      if (event.data.type === 'pcm-chunk' && this.onAudioChunk) {
+      if (event.data.type === 'pcm-chunk' && this.onAudioChunk && this.audioContext) {
         const base64 = arrayBufferToBase64(event.data.data);
-        this.onAudioChunk(base64);
+        this.onAudioChunk(base64, this.audioContext.sampleRate);
       }
     };
 
     source.connect(this.workletNode);
-    // Don't connect to destination — we don't want to hear our own mic
-    this.workletNode.connect(this.audioContext.destination);
+    // Don't connect worklet to destination — we only capture, not play back mic audio
   }
 
   /**
