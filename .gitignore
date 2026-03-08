@@ -10,6 +10,7 @@ __pycache__/
 dist/
 build/
 *.egg
+venv/
 
 # Node
 node_modules/
