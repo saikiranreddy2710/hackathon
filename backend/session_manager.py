@@ -84,7 +84,7 @@ def _extract_translation(thinking_text: str) -> str:
     return ""
 
 
-
+class SessionManager:
     """
     Manages one Gemini Live session per browser WebSocket connection.
 
